@@ -1,13 +1,14 @@
 extern crate opencv;
 
-use opencv::core::{add_weighted, Mat, MatTrait, Scalar, Vec3b, CV_32S};
+use opencv::core::{add_weighted, Mat, MatTrait, Scalar, Vec3b, CV_32S, CV_8U};
 use opencv::highgui;
 use opencv::imgcodecs;
-use opencv::imgcodecs::{IMREAD_GRAYSCALE, IMREAD_UNCHANGED};
+use opencv::imgcodecs::IMREAD_UNCHANGED;
 use opencv::imgproc::sobel;
 use std::cmp::{max, min};
+use std::fmt::Error;
 
-fn generate_energies(input_matrix: &Mat) -> Mat {
+fn generate_energies(input_matrix: &Mat) -> Result<Mat, Error> {
     //create the energy matrix
     let mut energy_map = Mat::new_rows_cols_with_default(
         input_matrix.rows(),
@@ -65,7 +66,7 @@ fn generate_energies(input_matrix: &Mat) -> Mat {
         }
     }
 
-    energy_map
+    Result::Ok(energy_map)
 }
 
 fn generate_seam(energy_map: &Mat) -> Vec<i32> {
@@ -106,24 +107,50 @@ fn generate_seam(energy_map: &Mat) -> Vec<i32> {
     minimum_indices
 }
 
-fn update_image(image: &mut Mat, seam: Vec<i32>) {
+fn cut_seam(image: &Mat, seam: &Vec<i32>, colordepth: i32) -> Result<Mat, Error> {
+    let mut output = Mat::new_rows_cols_with_default(
+        image.rows(),
+        image.cols() - 1,
+        image.typ().unwrap(),
+        Scalar::from(0.0),
+    )
+    .unwrap();
+
+    //copy everything but the pixels at the index
+    for y in 0..image.rows() {
+        let mut x_offset = 0;
+        for x in 0..output.cols() {
+            if x == seam[y as usize] {
+                x_offset = 1;
+            }
+            if colordepth == CV_32S {
+                *output.at_2d_mut::<Vec3b>(y, x).unwrap() = *image.at_2d(y, x + x_offset).unwrap();
+            } else if colordepth == CV_8U {
+                *output.at_2d_mut::<u8>(y, x).unwrap() = *image.at_2d(y, x + x_offset).unwrap();
+            }
+        }
+    }
+
+    Result::Ok(output)
+}
+
+fn mark_seam(image: &Mat, seam: &Vec<i32>) -> Result<Mat, Error> {
+    let mut output = image.clone();
+
     for index in (0..seam.len()).rev() {
-        *image
+        *output
             .at_2d_mut::<Vec3b>(index as i32, *seam.get(seam.len() - (index + 1)).unwrap())
             .unwrap() = Vec3b::from([0, 0, 255]);
     }
+
+    Ok(output)
 }
 
-fn main() {
-    let path: String = String::from("/home/clemens/repositorys/seamcarving/picture.bmp");
-
-    let image_gray = imgcodecs::imread(&path, IMREAD_GRAYSCALE).unwrap();
-    let mut image_colored = imgcodecs::imread(&path, IMREAD_UNCHANGED).unwrap();
-
+fn apply_gradient(image: &Mat) -> Result<Mat, Error> {
     let mut grad_x: Mat = Mat::new_rows_cols_with_default(
-        image_gray.rows(),
-        image_gray.cols(),
-        image_gray.depth().unwrap(),
+        image.rows(),
+        image.cols(),
+        image.depth().unwrap(),
         Scalar::from(0.0),
     )
     .unwrap();
@@ -132,9 +159,9 @@ fn main() {
     let mut out: Mat = grad_x.clone();
 
     let _ = sobel(
-        &image_gray,
+        &image,
         &mut grad_x,
-        image_gray.depth().unwrap(),
+        image.depth().unwrap(),
         1,
         0,
         3,
@@ -144,9 +171,9 @@ fn main() {
     );
 
     let _ = sobel(
-        &image_gray,
+        &image,
         &mut grad_y,
-        image_gray.depth().unwrap(),
+        image.depth().unwrap(),
         0,
         1,
         3,
@@ -162,15 +189,55 @@ fn main() {
         0.5,
         0.0,
         &mut out,
-        image_gray.depth().unwrap(),
+        image.depth().unwrap(),
     );
 
-    let energy_map: Mat = generate_energies(&out);
+    Result::Ok(out)
+}
 
-    let seam = generate_seam(&energy_map);
+fn to_grayscale(image: &Mat) -> Result<Mat, Error> {
+    let mut gray: Mat =
+        Mat::new_rows_cols_with_default(image.rows(), image.cols(), CV_8U, Scalar::from(0.0))
+            .unwrap();
 
-    update_image(&mut image_colored, seam);
+    for y in 0..image.rows() {
+        for x in 0..image.cols() {
+            let r = image.at_2d::<Vec3b>(y, x).unwrap()[0] as f32;
+            let g = image.at_2d::<Vec3b>(y, x).unwrap()[1] as f32;
+            let b = image.at_2d::<Vec3b>(y, x).unwrap()[2] as f32;
 
-    highgui::imshow("filtered", &image_colored).unwrap();
+            *gray.at_2d_mut::<u8>(y, x).unwrap() = ((r + g + b) / 3.0).floor() as u8;
+        }
+    }
+
+    Ok(gray)
+}
+
+fn carve(image: &Mat, num: i32) -> Result<Mat, Error> {
+    let mut image_updated_colored = image.clone();
+
+    let image_gray = to_grayscale(&image).unwrap();
+    let mut gradient_matrix: Mat = apply_gradient(&image_gray).unwrap();
+
+    for i in 0..num {
+        println!("cutting seam {}", i);
+
+        let energy_map: Mat = generate_energies(&gradient_matrix).unwrap();
+        let seam = generate_seam(&energy_map);
+        image_updated_colored = cut_seam(&image_updated_colored, &seam, CV_32S).unwrap();
+        //image_updated_colored = mark_seam(&image_updated_colored, &seam).unwrap();
+        gradient_matrix = cut_seam(&gradient_matrix, &seam, CV_8U).unwrap();
+    }
+
+    Ok(image_updated_colored)
+}
+
+fn main() {
+    let path: String = String::from("/home/clemens/repositorys/seamcarving/picture.bmp");
+    let image = imgcodecs::imread(&path, IMREAD_UNCHANGED).unwrap();
+
+    let carved = carve(&image, 100).unwrap();
+
+    highgui::imshow("filtered", &carved).unwrap();
     highgui::wait_key(0).unwrap();
 }
