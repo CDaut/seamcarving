@@ -1,3 +1,5 @@
+mod with_vectors;
+
 extern crate opencv;
 
 use opencv::core::{add_weighted, Mat, MatTrait, Scalar, Vec3b, CV_32S, CV_8U};
@@ -119,6 +121,7 @@ fn cut_seam(image: &Mat, seam: &Vec<i32>, colordepth: i32) -> Result<Mat, Error>
     //copy everything but the pixels at the index
     for y in 0..image.rows() {
         let mut x_offset = 0;
+
         for x in 0..output.cols() {
             if x == seam[y as usize] {
                 x_offset = 1;
@@ -134,7 +137,8 @@ fn cut_seam(image: &Mat, seam: &Vec<i32>, colordepth: i32) -> Result<Mat, Error>
     Result::Ok(output)
 }
 
-fn mark_seam(image: &Mat, seam: &Vec<i32>) -> Result<Mat, Error> {
+#[allow(dead_code)]
+pub fn mark_seam(image: &Mat, seam: &Vec<i32>) -> Result<Mat, Error> {
     let mut output = image.clone();
 
     for index in (0..seam.len()).rev() {
@@ -215,29 +219,31 @@ fn to_grayscale(image: &Mat) -> Result<Mat, Error> {
 
 fn carve(image: &Mat, num: i32) -> Result<Mat, Error> {
     let mut image_updated_colored = image.clone();
-
-    let image_gray = to_grayscale(&image).unwrap();
-    let mut gradient_matrix: Mat = apply_gradient(&image_gray).unwrap();
+    let mut image_gray = to_grayscale(&image).unwrap();
 
     for i in 0..num {
         println!("cutting seam {}", i);
 
+        let gradient_matrix: Mat = apply_gradient(&image_gray).unwrap();
         let energy_map: Mat = generate_energies(&gradient_matrix).unwrap();
         let seam = generate_seam(&energy_map);
+
         image_updated_colored = cut_seam(&image_updated_colored, &seam, CV_32S).unwrap();
-        //image_updated_colored = mark_seam(&image_updated_colored, &seam).unwrap();
-        gradient_matrix = cut_seam(&gradient_matrix, &seam, CV_8U).unwrap();
+
+        image_gray = cut_seam(&image_gray, &seam, CV_8U).unwrap();
     }
 
     Ok(image_updated_colored)
 }
 
 fn main() {
-    let path: String = String::from("/home/clemens/repositorys/seamcarving/picture.bmp");
-    let image = imgcodecs::imread(&path, IMREAD_UNCHANGED).unwrap();
+    // let path: String = String::from("/home/clemens/repositorys/seamcarving/surfer.png");
+    // let image = imgcodecs::imread(&path, IMREAD_UNCHANGED).unwrap();
+    //
+    // let carved = carve(&image, 70).unwrap();
+    //
+    // highgui::imshow("filtered", &carved).unwrap();
+    // highgui::wait_key(0).unwrap();
 
-    let carved = carve(&image, 100).unwrap();
-
-    highgui::imshow("filtered", &carved).unwrap();
-    highgui::wait_key(0).unwrap();
+    with_vectors::main();
 }
